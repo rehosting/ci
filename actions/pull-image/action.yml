@@ -1,0 +1,109 @@
+name: Pull prebuilt image
+description: >-
+  Trust Harbor's cert, log in, and `docker pull` an already-built image into the
+  local daemon, retagging it to a stable local name for test jobs to `docker run`.
+
+  This is the org-wide generalization of penguin's `penguin-image` action. It
+  replaces the old `docker buildx build --load` from a `FROM ...:<sha>` heredoc
+  (which re-exported/re-imported a ~GB image through BuildKit, ~6 min/job) with a
+  plain `docker pull` against the daemon's image store. No buildx is set up,
+  because test runners only `docker run` the image; they never build it.
+
+  The optional Python setup exists for repos (e.g. penguin) whose test runners
+  are Python scripts needing a couple of pip deps; leave install-python off for
+  everything else.
+
+  PREREQUISITE — the dind DAEMON must trust Harbor's CA. The pull is performed by
+  the Docker daemon, not the runner, so trusting the cert on the runner
+  (install-cert) does NOT help the pull, and `--insecure-registry` does NOT cover
+  the OAuth `/service/token` TLS leg. On Docker 24+ with the containerd image
+  store (the default in Docker 29), the daemon uses Go's system cert pool and
+  ignores `/etc/docker/certs.d`. The runner POOL must therefore ship Harbor's
+  issuing CA into the dind daemon's system trust store (e.g. mount the CA at
+  /usr/local/share/ca-certificates and run update-ca-certificates before dockerd).
+  Without that, this action fails with `x509: certificate signed by unknown
+  authority` on the token fetch — and install-cert won't fix it. install-cert
+  therefore defaults to false here.
+
+  The calling job must `actions/checkout` before using this action.
+
+inputs:
+  registry:
+    description: Arc registry host (Harbor) to log in to
+    required: true
+  target:
+    description: Registry+namespace the image was pushed under (may include a path)
+    required: true
+  image:
+    description: Image repository under the target, e.g. rehosting/penguin
+    required: true
+  tag:
+    description: Image tag to pull (typically the build SHA)
+    required: true
+  local-tag:
+    description: Local tag to apply after pull (what test jobs `docker run`)
+    required: false
+    default: ""
+  username:
+    description: Arc registry username
+    required: false
+    default: ""
+  password:
+    description: Arc registry password
+    required: false
+    default: ""
+  install-cert:
+    description: >-
+      Fetch and trust Harbor's cert on the RUNNER. Note this does NOT affect the
+      docker pull (the daemon does that — see PREREQUISITE above). Defaults off.
+    required: false
+    default: "false"
+  install-python:
+    description: Install Python (for repos whose test runners are Python scripts)
+    required: false
+    default: "false"
+  python-version:
+    description: Python version to install when install-python is true
+    required: false
+    default: "3.10.12"
+  pip-packages:
+    description: Space-separated pip packages to install when install-python is true
+    required: false
+    default: "click pyyaml"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      if: ${{ inputs.install-python == 'true' }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install test runner dependencies
+      if: ${{ inputs.install-python == 'true' }}
+      shell: bash
+      run: pip install ${{ inputs.pip-packages }}
+
+    - name: Set up registry access (cert + login, no buildx)
+      uses: rehosting/ci/actions/arc-registry-setup@v1
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}
+        install-cert: ${{ inputs.install-cert }}
+        setup-buildx: "false"
+        login: "true"
+
+    - name: Pull prebuilt image
+      shell: bash
+      run: |
+        set -euo pipefail
+        img="${{ inputs.target }}/${{ inputs.image }}:${{ inputs.tag }}"
+        local_tag="${{ inputs.local-tag }}"
+        if [ -z "${local_tag}" ]; then
+          local_tag="${{ inputs.image }}:latest"
+        fi
+        echo "Pulling ${img} -> ${local_tag}"
+        docker pull "${img}"
+        docker tag "${img}" "${local_tag}"

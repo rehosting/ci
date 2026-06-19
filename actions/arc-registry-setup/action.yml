@@ -1,0 +1,81 @@
+name: Arc registry setup
+description: >-
+  Trust Harbor's self-signed certificate, optionally set up Docker Buildx with
+  the insecure Harbor registry config, and log in to the Rehosting Arc registry.
+
+  This is the org-wide generalization of the per-repo `arc-registry-setup`
+  actions that were copy-pasted across several repos. Build/push jobs
+  want the full treatment (cert + buildx + login); cleanup jobs that only call
+  the Harbor REST API want `setup-buildx: false` and `login: false` (cert only);
+  jobs that `docker pull` a prebuilt image want `setup-buildx: false` but keep
+  `login: true`.
+
+inputs:
+  registry:
+    description: Arc registry host (Harbor), e.g. harbor.harbor.svc.cluster.local
+    required: true
+  username:
+    description: Arc registry username
+    required: false
+    default: ""
+  password:
+    description: Arc registry password
+    required: false
+    default: ""
+  install-cert:
+    description: Fetch and trust Harbor's self-signed certificate
+    required: false
+    default: "true"
+  setup-buildx:
+    description: Run docker/setup-buildx-action with the insecure Harbor config
+    required: false
+    default: "true"
+  login:
+    description: Log in to the registry with docker/login-action
+    required: false
+    default: "true"
+  buildkit-image:
+    description: >-
+      BuildKit image for the buildx driver. Leave empty to use buildx's default
+      (recommended). Pinning moby/buildkit:master has previously broken image
+      builds on the kernel-5.4 runners (/proc/acpi regression), so this is opt-in.
+    required: false
+    default: ""
+  network:
+    description: Network mode for the buildx driver
+    required: false
+    default: host
+
+runs:
+  using: composite
+  steps:
+    - name: Trust Harbor's self-signed certificate
+      if: ${{ inputs.install-cert == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Fetching certificate from ${{ inputs.registry }}"
+        openssl s_client -showcerts -connect ${{ inputs.registry }}:443 < /dev/null 2>/dev/null \
+          | openssl x509 -outform PEM \
+          | sudo tee /usr/local/share/ca-certificates/harbor.crt > /dev/null
+        sudo update-ca-certificates
+
+    - name: Set up Docker Buildx
+      if: ${{ inputs.setup-buildx == 'true' }}
+      uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: |
+          ${{ inputs.buildkit-image && format('image={0}', inputs.buildkit-image) || '' }}
+          network=${{ inputs.network }}
+        buildkitd-config-inline: |
+          [registry."${{ inputs.registry }}"]
+            insecure = true
+            http = true
+
+    - name: Log in to Rehosting Arc Registry
+      if: ${{ inputs.login == 'true' }}
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ inputs.registry }}
+        username: ${{ inputs.username }}
+        password: ${{ inputs.password }}

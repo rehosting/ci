@@ -1,0 +1,99 @@
+name: Nix setup
+description: >-
+  Install Nix and wire up a binary cache so any rehosting repo can run Nix
+  builds without re-deriving the install + caching boilerplate. Generalizes the
+  three flavors already in the org: hyperfs (install-nix-action +
+  GitHub-Actions-cache via cache-nix-action), unblob (install-nix-action +
+  Cachix), and smallworld (DeterminateSystems installer).
+
+  Pick the installer with `installer` and the cache backend with `cache-backend`
+  (github | cachix | both | none). Everything else has a working default, so the
+  minimal call is just `uses: rehosting/ci/actions/nix-setup@v1`.
+
+inputs:
+  installer:
+    description: "Nix installer: 'cachix' (cachix/install-nix-action) or 'determinate' (DeterminateSystems)"
+    required: false
+    default: cachix
+  install-url:
+    description: Pin a specific Nix release installer URL (cachix installer only)
+    required: false
+    default: ""
+  github-token:
+    description: >-
+      GITHUB_TOKEN, used as a Nix access-token to avoid github.com API rate
+      limits when fetching flake inputs. Strongly recommended.
+    required: false
+    default: ""
+  extra-nix-config:
+    description: Extra lines appended to nix.conf (e.g. "max-jobs = 8", "cores = 8")
+    required: false
+    default: ""
+  cache-backend:
+    description: "Binary cache backend: github | cachix | both | none"
+    required: false
+    default: github
+  cache-key:
+    description: Primary key for the GitHub-Actions Nix store cache (github/both backends)
+    required: false
+    default: ""
+  gc-max-store-size:
+    description: >-
+      Trim the Nix store to this many bytes before saving the GitHub cache, to
+      stay under the cache size limit (github/both backends). Empty = no trim.
+    required: false
+    default: ""
+  cachix-name:
+    description: Cachix cache name (cachix/both backends)
+    required: false
+    default: ""
+  cachix-auth-token:
+    description: Cachix auth token (cachix/both backends; needed for pushes)
+    required: false
+    default: ""
+  cachix-extra-pull-names:
+    description: Additional Cachix caches to pull from, comma-separated
+    required: false
+    default: ""
+  flake-checker:
+    description: Run DeterminateSystems/flake-checker-action against the flake
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Nix (cachix/install-nix-action)
+      if: ${{ inputs.installer == 'cachix' }}
+      uses: cachix/install-nix-action@v27
+      with:
+        install_url: ${{ inputs.install-url }}
+        github_access_token: ${{ inputs.github-token }}
+        extra_nix_config: ${{ inputs.extra-nix-config }}
+
+    - name: Install Nix (DeterminateSystems)
+      if: ${{ inputs.installer == 'determinate' }}
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: |
+          ${{ inputs.github-token && format('access-tokens = github.com={0}', inputs.github-token) || '' }}
+          ${{ inputs.extra-nix-config }}
+
+    - name: Nix store cache (GitHub Actions cache)
+      if: ${{ inputs.cache-backend == 'github' || inputs.cache-backend == 'both' }}
+      uses: nix-community/cache-nix-action@v5
+      with:
+        primary-key: ${{ inputs.cache-key || format('{0}-nix-store', runner.os) }}
+        gc-max-store-size-linux: ${{ inputs.gc-max-store-size }}
+
+    - name: Cachix binary cache
+      if: ${{ (inputs.cache-backend == 'cachix' || inputs.cache-backend == 'both') && inputs.cachix-name != '' }}
+      uses: cachix/cachix-action@v14
+      with:
+        name: ${{ inputs.cachix-name }}
+        authToken: ${{ inputs.cachix-auth-token }}
+        extraPullNames: ${{ inputs.cachix-extra-pull-names }}
+
+    - name: Flake checker
+      if: ${{ inputs.flake-checker == 'true' }}
+      uses: DeterminateSystems/flake-checker-action@main

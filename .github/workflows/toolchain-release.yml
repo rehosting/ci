@@ -1,0 +1,98 @@
+name: Toolchain build and release
+
+# Reusable workflow (workflow_call) for the guest-side utility repos that all
+# share the same shape: build a per-arch tarball inside a shared embedded
+# toolchain image, then cut a versioned GitHub release with the tarball attached.
+# Collapses the ~identical build.yml in busybox, console, guesthopper and
+# libnvram (and the CI-only test variant).
+#
+# Out of scope (different enough to keep bespoke): hyperfs (Nix flakes),
+# vpnguin (local Dockerfile), dwarffi (multi-platform Python wheels). Those can
+# still reuse arc-registry-setup if/when they touch Harbor.
+#
+# Callers pin it as:
+#   uses: rehosting/ci/.github/workflows/toolchain-release.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      toolchain-image:
+        description: Toolchain image to build inside
+        type: string
+        default: ghcr.io/rehosting/embedded-toolchains:latest
+      build-command:
+        description: Command run inside the toolchain container (cwd is the repo, mounted at /app)
+        type: string
+        default: /app/build.sh
+      artifact:
+        description: Tarball to attach to the release, e.g. busybox-latest.tar.gz
+        type: string
+        required: true
+      package-command:
+        description: Optional command (on the host) to produce <artifact> after the build
+        type: string
+        default: ""
+      runs-on:
+        type: string
+        default: ubuntu-latest
+      submodules:
+        description: actions/checkout submodules value (false | true | recursive)
+        type: string
+        default: "false"
+      release:
+        description: Create a GitHub release (set false for PR/test runs)
+        type: boolean
+        default: true
+      draft:
+        type: boolean
+        default: true
+      tag-suffix:
+        description: Optional suffix appended to the version tag (e.g. -stable)
+        type: string
+        default: ""
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: ${{ inputs.submodules }}
+
+      - name: Bump version
+        if: ${{ inputs.release }}
+        id: version
+        uses: reecetech/version-increment@2023.10.1
+        with:
+          scheme: semver
+          increment: patch
+
+      - name: Build in toolchain image
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD:/app" -w /app "${{ inputs.toolchain-image }}" \
+            bash -lc '${{ inputs.build-command }}'
+
+      - name: Package artifact
+        if: ${{ inputs.package-command != '' }}
+        run: |
+          set -euo pipefail
+          ${{ inputs.package-command }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ inputs.artifact }}
+
+      - name: Create release
+        if: ${{ inputs.release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: ${{ inputs.draft }}
+          tag_name: ${{ steps.version.outputs.v-version }}${{ inputs.tag-suffix }}
+          files: ${{ inputs.artifact }}

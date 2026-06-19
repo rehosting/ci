@@ -1,0 +1,55 @@
+name: Delete Harbor PR cache artifact
+description: >-
+  Delete a per-PR buildx cache tag from Harbor via its REST API, then let
+  Harbor's daily GC reclaim the blobs. Generalized from penguin's
+  cleanup-pr-cache workflow. Intended to run on `pull_request: [closed]`.
+
+  Treats 404 (already gone) as success and 401/403 (auth) as failure. Only run
+  this for internal PRs — fork PRs have no registry credentials.
+
+inputs:
+  registry:
+    description: Harbor host, e.g. harbor.harbor.svc.cluster.local
+    required: true
+  project:
+    description: Harbor project name
+    required: false
+    default: rehosting
+  repository:
+    description: Repository within the project, e.g. penguin
+    required: true
+  reference:
+    description: Artifact reference (tag) to delete, e.g. cache-PR-123
+    required: true
+  username:
+    description: Harbor username
+    required: true
+  password:
+    description: Harbor password
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Delete cache artifact via Harbor API
+      shell: bash
+      env:
+        HARBOR_USER: ${{ inputs.username }}
+        HARBOR_PASS: ${{ inputs.password }}
+      run: |
+        set -euo pipefail
+        # -k: skip TLS verification for the in-cluster, self-signed Harbor. The
+        # runner's CA store can't reliably validate Harbor (it serves only a
+        # CA:FALSE leaf, not the issuing CA), so trusting the cert on the runner
+        # is fragile; this call is a known in-cluster endpoint, so -k is correct.
+        url="https://${{ inputs.registry }}/api/v2.0/projects/${{ inputs.project }}/repositories/${{ inputs.repository }}/artifacts/${{ inputs.reference }}"
+        echo "DELETE ${url}"
+        code=$(curl -ksS -o /dev/null -w '%{http_code}' -X DELETE \
+          -u "${HARBOR_USER}:${HARBOR_PASS}" "${url}")
+        echo "HTTP ${code}"
+        case "${code}" in
+          200|202) echo "Deleted." ;;
+          404)     echo "Not found (already gone) — OK." ;;
+          401|403) echo "::error::Authentication/authorization failed."; exit 1 ;;
+          *)       echo "::error::Unexpected status ${code}."; exit 1 ;;
+        esac

@@ -1,0 +1,127 @@
+name: Nix build and release
+
+# Reusable workflow (workflow_call): install Nix (with caching via nix-setup),
+# build a flake, tar the result, and cut a versioned GitHub release. Generalizes
+# hyperfs's build.yaml; usable by any repo that ships a flake-built tarball.
+#
+# Callers pin it as:
+#   uses: rehosting/ci/.github/workflows/nix-release.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        description: Tarball to produce and attach, e.g. hyperfs.tar.gz
+        type: string
+        required: true
+      result-path:
+        description: Path (relative to repo) that `nix build` produces; tarred into <artifact>
+        type: string
+        default: result
+      build-command:
+        description: Nix build command
+        type: string
+        default: nix build
+      flake-check:
+        description: Run `nix flake check` before building
+        type: boolean
+        default: true
+      runs-on:
+        type: string
+        default: rehosting-arc
+      apt-packages:
+        description: Extra apt packages to install before building (space-separated; empty = skip)
+        type: string
+        default: ""
+      installer:
+        type: string
+        default: cachix
+      extra-nix-config:
+        type: string
+        default: |
+          max-jobs = 8
+          cores = 8
+      cache-backend:
+        type: string
+        default: github
+      cache-key:
+        type: string
+        default: ""
+      cachix-name:
+        type: string
+        default: ""
+      flake-checker:
+        type: boolean
+        default: false
+      release:
+        type: boolean
+        default: true
+      draft:
+        type: boolean
+        default: true
+      tag-suffix:
+        type: string
+        default: ""
+    secrets:
+      cachix-auth-token:
+        required: false
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install apt packages
+        if: ${{ inputs.apt-packages != '' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ inputs.apt-packages }}
+
+      - name: Set up Nix
+        uses: rehosting/ci/actions/nix-setup@v1
+        with:
+          installer: ${{ inputs.installer }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          extra-nix-config: ${{ inputs.extra-nix-config }}
+          cache-backend: ${{ inputs.cache-backend }}
+          cache-key: ${{ inputs.cache-key }}
+          cachix-name: ${{ inputs.cachix-name }}
+          cachix-auth-token: ${{ secrets.cachix-auth-token }}
+          flake-checker: ${{ inputs.flake-checker }}
+
+      - name: Flake check
+        if: ${{ inputs.flake-check }}
+        run: nix flake check
+
+      - name: Build
+        run: ${{ inputs.build-command }}
+
+      - name: Package result
+        run: tar -chzvf ${{ inputs.artifact }} ${{ inputs.result-path }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ inputs.artifact }}
+
+      - name: Bump version
+        if: ${{ inputs.release }}
+        id: version
+        uses: reecetech/version-increment@2023.10.1
+        with:
+          use_api: true
+
+      - name: Create release
+        if: ${{ inputs.release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: ${{ inputs.draft }}
+          tag_name: ${{ steps.version.outputs.v-version }}${{ inputs.tag-suffix }}
+          files: ${{ inputs.artifact }}
