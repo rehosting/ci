@@ -69,6 +69,12 @@ on:
         description: Extra cache-from refs, one per line (e.g. the cache_last_published ref)
         type: string
         default: ""
+      cache-to-extra:
+        description: >-
+          Extra cache-to refs, one per line (e.g. a cache_last_published ref a
+          publish job refreshes). Only written when write-cache is true.
+        type: string
+        default: ""
       write-cache:
         description: Write the shared cache (disable for fork/PR read-only builds)
         type: boolean
@@ -176,3 +182,4 @@ jobs:
           cache-to: |
             ${{ inputs.write-cache && format('type=registry,ref={0}/{1}:{2},mode=max', env.TARGET, inputs.image, inputs.cache-tag) || '' }}
             ${{ (inputs.write-cache && inputs.pr-cache && github.event.number) && format('type=registry,ref={0}/{1}:cache-PR-{2}', env.TARGET, inputs.image, github.event.number) || '' }}
+            ${{ inputs.write-cache && inputs.cache-to-extra || '' }}
