@@ -47,7 +47,7 @@ this way.
 
 | Workflow | Purpose |
 |----------|---------|
-| `rehosting/ci/.github/workflows/build-and-push.yml@v1` | Build a Docker image and push to Harbor with the `:cache` / `:cache-PR-<n>` registry cache. Folds in the REGISTRY/USER/CACHE/TARGET/EXTERNAL_REGISTRY_PASS env ladder. |
+| `rehosting/ci/.github/workflows/build-and-push.yml@v1` | Build a Docker image and push to Harbor with the `:cache` / `:cache-PR-<n>` registry cache. Folds in the REGISTRY/USER/CACHE/TARGET/EXTERNAL_REGISTRY_PASS env ladder. Optionally also pushes Docker Hub tags from `extra-tags` when the `dockerhub-token` secret is set. |
 | `rehosting/ci/.github/workflows/toolchain-release.yml@v1` | Build a tarball inside a shared embedded-toolchain image and cut a versioned GitHub release. For the guest-utility repos. |
 | `rehosting/ci/.github/workflows/nix-release.yml@v1` | Install Nix (cached), `nix build`, tar the result, and cut a versioned release. The Nix counterpart of `toolchain-release`. |
 | `rehosting/ci/.github/workflows/update-flake-lock.yml@v1` | Scheduled job that opens a PR bumping `flake.lock`. |

@@ -83,6 +83,10 @@ on:
       fetch-depth:
         type: number
         default: 0
+      dockerhub-user:
+        description: Docker Hub username (used only when the dockerhub-token secret is set).
+        type: string
+        default: ""
     secrets:
       registry:
         description: Harbor host. Empty => external fork defaults are used.
@@ -90,6 +94,13 @@ on:
       registry-user:
         required: false
       registry-password:
+        required: false
+      dockerhub-token:
+        description: >-
+          Docker Hub token. When set, the build also logs in to Docker Hub, so
+          extra-tags that reference Docker Hub (bare repos like
+          rehosting/penguin:latest) are pushed there in the same build. Leave
+          unset for Harbor-only repos.
         required: false
     outputs:
       image-ref:
@@ -128,6 +139,16 @@ jobs:
           username: ${{ env.USER }}
           password: ${{ env.PASSWORD }}
           buildkit-image: ${{ inputs.buildkit-image }}
+
+      # Optional second registry: when a Docker Hub token is provided, log in so a
+      # single build can push both Harbor (TARGET/...) and Docker Hub (bare-repo)
+      # tags listed in extra-tags. Common for repos that publish to both.
+      - name: Log in to Docker Hub
+        if: ${{ secrets.dockerhub-token != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ inputs.dockerhub-user }}
+          password: ${{ secrets.dockerhub-token }}
 
       - name: Compute image reference
         id: ref
