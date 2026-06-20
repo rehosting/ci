@@ -129,6 +129,9 @@ jobs:
       CACHE: ${{ secrets.registry && format('{0}/proxy', secrets.registry) || 'docker.io' }}
       TARGET: ${{ secrets.registry || 'harbor.harbor.svc.cluster.local/external' }}
       PASSWORD: ${{ secrets.registry-password || vars.EXTERNAL_REGISTRY_PASS }}
+      # Mapped to env because the `secrets` context is NOT available in a step
+      # `if:` — gate the optional Docker Hub login on env instead.
+      DOCKERHUB_TOKEN: ${{ secrets.dockerhub-token }}
     outputs:
       image-ref: ${{ steps.ref.outputs.image-ref }}
     steps:
@@ -150,11 +153,11 @@ jobs:
       # single build can push both Harbor (TARGET/...) and Docker Hub (bare-repo)
       # tags listed in extra-tags. Common for repos that publish to both.
       - name: Log in to Docker Hub
-        if: ${{ secrets.dockerhub-token != '' }}
+        if: ${{ env.DOCKERHUB_TOKEN != '' }}
         uses: docker/login-action@v3
         with:
           username: ${{ inputs.dockerhub-user }}
-          password: ${{ secrets.dockerhub-token }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Compute image reference
         id: ref
