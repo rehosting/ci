@@ -59,6 +59,14 @@ inputs:
     description: Run DeterminateSystems/flake-checker-action against the flake
     required: false
     default: "false"
+  enable-kvm:
+    description: >-
+      Let cachix/install-nix-action set up /dev/kvm (writes a udev rule and runs
+      udevadm). Harmless on GitHub-hosted runners, but on self-hosted Arc pods
+      that happen to expose /dev/kvm without a working udevd/`udevadm` it fails
+      the install. Set "false" for pure Nix builds that don't need a VM.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -70,6 +78,7 @@ runs:
         install_url: ${{ inputs.install-url }}
         github_access_token: ${{ inputs.github-token }}
         extra_nix_config: ${{ inputs.extra-nix-config }}
+        enable_kvm: ${{ inputs.enable-kvm }}
 
     - name: Install Nix (DeterminateSystems)
       if: ${{ inputs.installer == 'determinate' }}
