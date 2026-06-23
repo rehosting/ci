@@ -1,0 +1,180 @@
+name: Build a Nix image and push to Harbor
+
+# Reusable workflow (workflow_call) that builds an OCI image with Nix
+# (dockerTools, exposed as a flake attribute that produces an image tarball),
+# loads it into the local Docker daemon, and pushes it to the Rehosting Arc
+# Harbor registry (and optionally Docker Hub).
+#
+# It is the Nix counterpart of build-and-push.yml: same REGISTRY/USER/TARGET
+# fallback ladder, same arc-registry-setup login, same extra-tags / dockerhub
+# handling — but the image is produced by `nix build <flake-attr>` instead of
+# buildx, so there is no Dockerfile or registry buildx cache (Nix caches via
+# Cachix through nix-setup instead).
+#
+# Callers pin it as:
+#   uses: rehosting/ci/.github/workflows/nix-image-push.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Image repo under the registry namespace, e.g. rehosting/fw2tar
+        type: string
+        required: true
+      flake-attr:
+        description: Flake attribute that builds the image tarball
+        type: string
+        default: .#dockerImage
+      runs-on:
+        description: Runner label (must have Nix + Docker; e.g. rehosting-arc)
+        type: string
+        default: rehosting-arc
+      push:
+        type: boolean
+        default: true
+      tag-sha:
+        description: Tag the image <target>/<image>:<github.sha>
+        type: boolean
+        default: true
+      extra-tags:
+        description: Additional fully-qualified tags, one per line
+        type: string
+        default: ""
+      flake-check:
+        description: Run `nix flake check` before building
+        type: boolean
+        default: false
+      dockerhub-user:
+        description: Docker Hub username (used only when the dockerhub-token secret is set).
+        type: string
+        default: ""
+      cachix-name:
+        description: Cachix cache name for the Nix store (empty = no Cachix)
+        type: string
+        default: ""
+      checkout-ref:
+        type: string
+        default: ""
+      fetch-depth:
+        type: number
+        default: 0
+    secrets:
+      registry:
+        description: Harbor host. Empty => external fork defaults are used.
+        required: false
+      registry-user:
+        required: false
+      registry-password:
+        required: false
+      dockerhub-token:
+        description: Docker Hub token. When set, the build also logs in to Docker
+          Hub so bare-repo extra-tags are pushed there too.
+        required: false
+      cachix-auth-token:
+        description: Cachix auth token (needed to push to the cache; pulls work
+          without it). Leave unset on forks.
+        required: false
+    outputs:
+      image-ref:
+        description: Fully-qualified Harbor image reference that was pushed
+        value: ${{ jobs.build.outputs.image-ref }}
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runs-on }}
+    env:
+      # Same fallback ladder as build-and-push.yml: internal builds use the
+      # Harbor secrets; fork/external builds fall through to the public proxy +
+      # read-only "external" credentials (org variable EXTERNAL_REGISTRY_PASS).
+      REGISTRY: ${{ secrets.registry || 'harbor.harbor.svc.cluster.local' }}
+      REGISTRY_USER: ${{ secrets.registry-user || 'external' }}
+      TARGET: ${{ secrets.registry || 'harbor.harbor.svc.cluster.local/external' }}
+      PASSWORD: ${{ secrets.registry-password || vars.EXTERNAL_REGISTRY_PASS }}
+      DOCKERHUB_TOKEN: ${{ secrets.dockerhub-token }}
+      # Runner quirks on the self-hosted Arc pool: Nix/Cachix expect USER/HOME-ish
+      # vars and a writable TMPDIR/cache (mirrors rehosting/penguin-tools).
+      USER: runner
+      LOGNAME: runner
+      TMPDIR: /home/runner/_work/_temp
+      XDG_CACHE_HOME: /home/runner/_work/.cache
+    outputs:
+      image-ref: ${{ steps.push.outputs.image-ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ inputs.fetch-depth }}
+          ref: ${{ inputs.checkout-ref }}
+
+      - name: Prepare runner directories
+        shell: bash
+        run: mkdir -p "$TMPDIR" "$XDG_CACHE_HOME"
+
+      - name: Set up Nix
+        uses: rehosting/ci/actions/nix-setup@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          extra-nix-config: |
+            max-jobs = 8
+            cores = 8
+          cache-backend: ${{ inputs.cachix-name != '' && 'cachix' || 'none' }}
+          cachix-name: ${{ inputs.cachix-name }}
+          cachix-auth-token: ${{ secrets.cachix-auth-token }}
+
+      - name: Flake check
+        if: ${{ inputs.flake-check }}
+        run: nix flake check -L
+
+      - name: Build image
+        run: nix build -L "${{ inputs.flake-attr }}"
+
+      - name: Load image into Docker
+        id: load
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `nix build` leaves a docker-archive tarball at ./result. Loading it
+          # prints "Loaded image: <name>:<tag>"; capture that local reference.
+          loaded="$(docker load < result | sed -n 's/^Loaded image: //p' | head -1)"
+          echo "Loaded local image: $loaded"
+          echo "local-ref=$loaded" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Arc registry (cert + login, no buildx)
+        uses: rehosting/ci/actions/arc-registry-setup@v1
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.PASSWORD }}
+          setup-buildx: "false"
+
+      - name: Log in to Docker Hub
+        if: ${{ env.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ inputs.dockerhub-user }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push
+        id: push
+        if: ${{ inputs.push }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          local_ref='${{ steps.load.outputs.local-ref }}'
+          sha_ref="${TARGET}/${{ inputs.image }}:${GITHUB_SHA}"
+
+          tags=()
+          if [ '${{ inputs.tag-sha }}' = 'true' ]; then
+            tags+=("$sha_ref")
+          fi
+          while IFS= read -r t; do
+            [ -n "$t" ] && tags+=("$t")
+          done <<< '${{ inputs.extra-tags }}'
+
+          for t in "${tags[@]}"; do
+            echo "Pushing $t"
+            docker tag "$local_ref" "$t"
+            docker push "$t"
+          done
+
+          echo "image-ref=$sha_ref" >> "$GITHUB_OUTPUT"
