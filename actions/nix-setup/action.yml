@@ -71,6 +71,22 @@ inputs:
 runs:
   using: composite
   steps:
+    # The cachix installer fetches the Nix tarball with curl and unpacks it with
+    # xz; minimal self-hosted (Arc) pods ship neither. GitHub-hosted runners
+    # already have them, so this is a no-op there. (penguin-tools apt-installs
+    # these in its own workflow; doing it here covers every nix-setup consumer.)
+    - name: Ensure Nix installer prerequisites
+      if: ${{ inputs.installer == 'cachix' }}
+      shell: bash
+      run: |
+        if ! command -v xz >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y xz-utils curl
+          else
+            echo "::warning::xz/curl missing and no apt-get to install them; Nix install may fail"
+          fi
+        fi
+
     - name: Install Nix (cachix/install-nix-action)
       if: ${{ inputs.installer == 'cachix' }}
       uses: cachix/install-nix-action@v27
