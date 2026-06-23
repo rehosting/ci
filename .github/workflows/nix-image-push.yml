@@ -58,6 +58,13 @@ on:
       fetch-depth:
         type: number
         default: 0
+      enable-kvm:
+        description: >-
+          Forwarded to nix-setup. Self-hosted Arc pods that expose /dev/kvm
+          without a working udevd make install-nix-action's KVM setup fail; set
+          false for pure Nix image builds that don't need a VM.
+        type: boolean
+        default: true
     secrets:
       registry:
         description: Harbor host. Empty => external fork defaults are used.
@@ -120,6 +127,7 @@ jobs:
           cache-backend: ${{ inputs.cachix-name != '' && 'cachix' || 'none' }}
           cachix-name: ${{ inputs.cachix-name }}
           cachix-auth-token: ${{ secrets.cachix-auth-token }}
+          enable-kvm: ${{ inputs.enable-kvm }}
 
       - name: Flake check
         if: ${{ inputs.flake-check }}
