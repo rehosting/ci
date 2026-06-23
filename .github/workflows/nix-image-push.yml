@@ -65,6 +65,13 @@ on:
           false for pure Nix image builds that don't need a VM.
         type: boolean
         default: true
+      cachix-skip-push:
+        description: >-
+          Forwarded to nix-setup's skip-push. Set true when the Cachix token is
+          pull-only (so the post-step push doesn't 403). Empty = nix-setup's
+          default (push only on non-PR events).
+        type: string
+        default: ""
     secrets:
       registry:
         description: Harbor host. Empty => external fork defaults are used.
@@ -128,6 +135,7 @@ jobs:
           cachix-name: ${{ inputs.cachix-name }}
           cachix-auth-token: ${{ secrets.cachix-auth-token }}
           enable-kvm: ${{ inputs.enable-kvm }}
+          skip-push: ${{ inputs.cachix-skip-push }}
 
       - name: Flake check
         if: ${{ inputs.flake-check }}
