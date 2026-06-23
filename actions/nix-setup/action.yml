@@ -55,6 +55,14 @@ inputs:
     description: Additional Cachix caches to pull from, comma-separated
     required: false
     default: ""
+  skip-push:
+    description: >-
+      Whether to skip pushing built paths to Cachix in the post step. Leave
+      empty (default) to push only on non-PR events — pull_request builds skip
+      the push, matching the org convention and avoiding 403s when the cache
+      token is pull-only / fork PRs have no token. Set "true"/"false" to force.
+    required: false
+    default: ""
   flake-checker:
     description: Run DeterminateSystems/flake-checker-action against the flake
     required: false
@@ -118,6 +126,10 @@ runs:
         name: ${{ inputs.cachix-name }}
         authToken: ${{ inputs.cachix-auth-token }}
         extraPullNames: ${{ inputs.cachix-extra-pull-names }}
+        # Default: push only on non-PR events. PRs (incl. forks) pull from the
+        # cache but never push, so a pull-only / absent token doesn't fail the
+        # job's post step. An explicit "true"/"false" overrides the default.
+        skipPush: ${{ inputs.skip-push != '' && inputs.skip-push || (github.event_name == 'pull_request') }}
 
     - name: Flake checker
       if: ${{ inputs.flake-checker == 'true' }}
