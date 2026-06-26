@@ -44,6 +44,19 @@ on:
         description: Run `nix flake check` before building
         type: boolean
         default: false
+      extra-build-args:
+        description: >-
+          Extra arguments appended to the `nix build` invocation (e.g. --impure
+          when the flake reads a build-time env var).
+        type: string
+        default: ""
+      build-env:
+        description: >-
+          Environment variables to export before `nix build`, one KEY=VALUE per
+          line. Useful with --impure for injecting e.g. a release version the
+          flake reads via builtins.getEnv.
+        type: string
+        default: ""
       dockerhub-user:
         description: Docker Hub username (used only when the dockerhub-token secret is set).
         type: string
@@ -142,7 +155,16 @@ jobs:
         run: nix flake check -L
 
       - name: Build image
-        run: nix build -L "${{ inputs.flake-attr }}"
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Optional build-time env (one KEY=VALUE per line), e.g. a release
+          # version the flake reads via builtins.getEnv (needs --impure in
+          # extra-build-args).
+          while IFS= read -r line; do
+            [ -n "$line" ] && export "$line"
+          done <<< '${{ inputs.build-env }}'
+          nix build -L ${{ inputs.extra-build-args }} "${{ inputs.flake-attr }}"
 
       - name: Load image into Docker
         id: load
