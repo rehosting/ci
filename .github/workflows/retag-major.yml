@@ -1,0 +1,41 @@
+name: Move major version tag
+
+# Consumers pin the reusable workflows / actions in this repo by major version
+# (e.g. `uses: rehosting/ci/.github/workflows/nix-image-push.yml@v1`). That
+# floating major tag must always point at the latest commit on the default
+# branch; otherwise merged changes silently don't reach `@v1` consumers (which
+# is exactly how v1 went stale once). On every push to main, force-move the
+# major tag (vN, derived from the newest semver tag) to the pushed commit.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: retag-major
+  cancel-in-progress: false
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need all tags to find the current major
+
+      - name: Force-move the major tag to this commit
+        run: |
+          set -euo pipefail
+          # Highest existing semver tag (vMAJOR.MINOR.PATCH); its major is the
+          # one consumers pin. Default to 1 if no semver tag exists yet.
+          latest="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//' | sort -V | tail -1)"
+          major="${latest%%.*}"
+          major="${major:-1}"
+          tag="v${major}"
+          echo "Moving ${tag} -> ${GITHUB_SHA}"
+          git tag -f "${tag}" "${GITHUB_SHA}"
+          git push -f origin "refs/tags/${tag}"
