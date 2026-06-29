@@ -101,7 +101,14 @@ runs:
       with:
         install_url: ${{ inputs.install-url }}
         github_access_token: ${{ inputs.github-token }}
-        extra_nix_config: ${{ inputs.extra-nix-config }}
+        # accept-flake-config trusts the binary cache (substituters +
+        # public keys) that org flakes declare in their nixConfig, so builds
+        # actually use rehosting-tools.cachix.org instead of warning
+        # "ignoring untrusted flake configuration setting" and rebuilding from
+        # source. Applied for every nix-setup consumer.
+        extra_nix_config: |
+          accept-flake-config = true
+          ${{ inputs.extra-nix-config }}
         enable_kvm: ${{ inputs.enable-kvm }}
 
     - name: Install Nix (DeterminateSystems)
@@ -109,6 +116,7 @@ runs:
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: |
+          accept-flake-config = true
           ${{ inputs.github-token && format('access-tokens = github.com={0}', inputs.github-token) || '' }}
           ${{ inputs.extra-nix-config }}
 
