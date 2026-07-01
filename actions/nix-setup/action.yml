@@ -129,7 +129,7 @@ runs:
 
     - name: Cachix binary cache
       if: ${{ (inputs.cache-backend == 'cachix' || inputs.cache-backend == 'both') && inputs.cachix-name != '' }}
-      uses: cachix/cachix-action@v14
+      uses: cachix/cachix-action@v17
       with:
         name: ${{ inputs.cachix-name }}
         authToken: ${{ inputs.cachix-auth-token }}
