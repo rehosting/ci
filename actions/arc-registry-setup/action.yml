@@ -36,11 +36,17 @@ inputs:
     default: "true"
   buildkit-image:
     description: >-
-      BuildKit image for the buildx driver. Leave empty to use buildx's default
-      (recommended). Pinning moby/buildkit:master has previously broken image
-      builds on the kernel-5.4 runners (/proc/acpi regression), so this is opt-in.
+      BuildKit image for the buildx driver. Defaults to a pinned moby/buildkit
+      release because the floating buildx default is NOT safe on our runners:
+      the buildx-stable-1 tag advanced to v0.31.2, whose runc masks /proc/acpi
+      in a way the kernel-5.4 runners reject ("can't mask dir /proc/acpi ...
+      invalid argument"), breaking every image build. (moby/buildkit:master
+      broke the same way earlier — same 5.4 root cause.) v0.30.0 is the last
+      minor before the bad runc line and an immutable release tag. Override
+      only to test a newer buildkit; drop this pin once the runner kernel is
+      bumped.
     required: false
-    default: ""
+    default: "moby/buildkit:v0.30.0"
   network:
     description: Network mode for the buildx driver
     required: false
