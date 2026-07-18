@@ -80,9 +80,17 @@ on:
         type: boolean
         default: true
       buildkit-image:
-        description: BuildKit image override (empty = buildx default; see arc-registry-setup)
+        # Forwarded verbatim to arc-registry-setup (below). Because it's passed
+        # explicitly, an empty value here would SHADOW that action's own default
+        # — so the pin must be duplicated. Default to the same pinned release
+        # the action uses (moby/buildkit:v0.30.0): the floating buildx default
+        # floated to v0.31.2, whose runc masks /proc/acpi in a way the 5.4-kernel
+        # runners reject, breaking every build routed through this workflow.
+        # Override to test a newer buildkit; drop both pins once the runner
+        # kernel is bumped past 5.4.
+        description: BuildKit image for the buildx driver (forwarded to arc-registry-setup)
         type: string
-        default: ""
+        default: "moby/buildkit:v0.30.0"
       checkout-ref:
         type: string
         default: ""
