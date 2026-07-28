@@ -105,5 +105,26 @@ runs:
           local_tag="${{ inputs.image }}:latest"
         fi
         echo "Pulling ${img} -> ${local_tag}"
-        docker pull "${img}"
+        # Retry the pull. On the shared-docker daemon, the store-prune cronjob
+        # runs a containerd GC (`docker image prune`) every 30 min that can sweep
+        # an in-progress content-store ingest out from under a concurrent pull,
+        # failing it mid-commit with e.g.
+        #   failed commit on ref "layer-sha256:...": commit failed: rename
+        #   .../content/ingest/<id>/data .../blobs/sha256/<layer>: no such file
+        # The corruption is a one-shot at the prune instant (next prune is 30 min
+        # out), so re-pulling the swept layer succeeds. Also absorbs ordinary
+        # registry/network blips. See rehosting/kube shared-docker prune notes.
+        attempts=4
+        delay=10
+        for i in $(seq 1 "$attempts"); do
+          if docker pull "${img}"; then
+            break
+          fi
+          if [ "$i" -eq "$attempts" ]; then
+            echo "docker pull ${img} failed after ${attempts} attempts" >&2
+            exit 1
+          fi
+          echo "pull attempt ${i}/${attempts} failed; retrying in ${delay}s" >&2
+          sleep "$delay"
+        done
         docker tag "${img}" "${local_tag}"
