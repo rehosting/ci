@@ -2,8 +2,11 @@ name: Build a Nix image and push to Harbor
 
 # Reusable workflow (workflow_call) that builds an OCI image with Nix
 # (dockerTools, exposed as a flake attribute that produces an image tarball),
-# loads it into the local Docker daemon, and pushes it to the Rehosting Arc
-# Harbor registry (and optionally Docker Hub).
+# and pushes it with skopeo to the Rehosting Arc Harbor registry (and optionally
+# Docker Hub). The push reads the docker-archive `nix build` produced directly;
+# it deliberately does NOT go through `docker load` + `docker push`, which
+# published dockerTools' uncompressed layer diffs as-is (see the Tag and push
+# step for the size regression that caused).
 #
 # It is the Nix counterpart of build-and-push.yml: same REGISTRY/USER/TARGET
 # fallback ladder, same arc-registry-setup login, same extra-tags / dockerhub
@@ -176,17 +179,6 @@ jobs:
           done <<< '${{ inputs.build-env }}'
           nix build -L ${{ inputs.extra-build-args }} "${{ inputs.flake-attr }}"
 
-      - name: Load image into Docker
-        id: load
-        shell: bash
-        run: |
-          set -euo pipefail
-          # `nix build` leaves a docker-archive tarball at ./result. Loading it
-          # prints "Loaded image: <name>:<tag>"; capture that local reference.
-          loaded="$(docker load < result | sed -n 's/^Loaded image: //p' | head -1)"
-          echo "Loaded local image: $loaded"
-          echo "local-ref=$loaded" >> "$GITHUB_OUTPUT"
-
       - name: Set up Arc registry (cert + login, no buildx)
         uses: rehosting/ci/actions/arc-registry-setup@v1
         with:
@@ -208,7 +200,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          local_ref='${{ steps.load.outputs.local-ref }}'
           sha_ref="${TARGET}/${{ inputs.image }}:${GITHUB_SHA}"
 
           tags=()
@@ -219,10 +210,43 @@ jobs:
             [ -n "$t" ] && tags+=("$t")
           done <<< '${{ inputs.extra-tags }}'
 
+          # Push straight from the docker-archive `nix build` left at ./result,
+          # with skopeo rather than `docker load` + `docker push`.
+          #
+          # WHY: dockerTools writes each layer as an UNCOMPRESSED tar diff, and
+          # the docker load/push path published them that way -- 114 of
+          # penguin v3.1.1's 115 layers landed in the registry as
+          # `application/vnd.docker.image.rootfs.diff.tar` (no `.gzip`), so the
+          # tag weighed 3.573 GB when the same image gzips to 1.79 GB. That made
+          # the first Nix-built release look ~4% BIGGER than the Dockerfile one
+          # it actually halves. skopeo compresses on the way out, so layers are
+          # stored `.tar.gzip` like every other image we publish.
+          #
+          # Skipping `docker load` also keeps a multi-GB image out of the
+          # per-node shared Docker daemon, which is already disk-pressured.
+          #
+          # Auth: arc-registry-setup and docker/login-action have already
+          # written ~/.docker/config.json, which skopeo reads. Harbor's
+          # self-signed cert is in the *system* trust store (arc-registry-setup
+          # runs update-ca-certificates), which skopeo honours, so TLS
+          # verification stays on.
+          # Prefer a preinstalled skopeo; otherwise get one from nixpkgs (Nix is
+          # already set up by this point, so this needs no apt).
+          if command -v skopeo >/dev/null 2>&1; then
+            skopeo=skopeo
+          else
+            skopeo="$(nix build --no-link --print-out-paths nixpkgs#skopeo)/bin/skopeo"
+          fi
+          "$skopeo" --version
+
           for t in "${tags[@]}"; do
             echo "Pushing $t"
-            docker tag "$local_ref" "$t"
-            docker push "$t"
+            "$skopeo" copy \
+              --dest-authfile "$HOME/.docker/config.json" \
+              --dest-compress-format gzip \
+              --dest-force-compress-format \
+              "docker-archive:result" \
+              "docker://$t"
           done
 
           echo "image-ref=$sha_ref" >> "$GITHUB_OUTPUT"
