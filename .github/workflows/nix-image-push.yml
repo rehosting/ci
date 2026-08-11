@@ -230,18 +230,24 @@ jobs:
           # self-signed cert is in the *system* trust store (arc-registry-setup
           # runs update-ca-certificates), which skopeo honours, so TLS
           # verification stays on.
-          # Prefer a preinstalled skopeo; otherwise get one from nixpkgs (Nix is
+          # Prefer a preinstalled skopeo; otherwise run one from nixpkgs (Nix is
           # already set up by this point, so this needs no apt).
-          if command -v skopeo >/dev/null 2>&1; then
-            skopeo=skopeo
-          else
-            skopeo="$(nix build --no-link --print-out-paths nixpkgs#skopeo)/bin/skopeo"
+          #
+          # Use `nix shell --command`, NOT a path derived from
+          # `nix build --print-out-paths`: skopeo is a multi-output derivation, so
+          # that prints BOTH `...-skopeo-1.24.0-man` and `...-skopeo-1.24.0`.
+          # Capturing it produced a two-line "path" and failed the release with
+          # `No such file or directory` / exit 127. `nix shell` selects the
+          # right output itself.
+          skopeo=(skopeo)
+          if ! command -v skopeo >/dev/null 2>&1; then
+            skopeo=(nix shell nixpkgs#skopeo --command skopeo)
           fi
-          "$skopeo" --version
+          "${skopeo[@]}" --version
 
           for t in "${tags[@]}"; do
             echo "Pushing $t"
-            "$skopeo" copy \
+            "${skopeo[@]}" copy \
               --dest-authfile "$HOME/.docker/config.json" \
               --dest-compress-format gzip \
               --dest-force-compress-format \
