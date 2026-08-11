@@ -247,7 +247,14 @@ jobs:
 
           for t in "${tags[@]}"; do
             echo "Pushing $t"
-            "${skopeo[@]}" copy \
+            # --insecure-policy: skopeo refuses to run without a containers
+            # trust policy, and the runners have no policy.json in any of the
+            # searched paths (~/.config/containers, /etc/containers,
+            # /usr/share/containers) -- it fails with "Error loading trust
+            # policy". We are not verifying image signatures here (neither did
+            # `docker push`), so skip the policy check rather than shipping a
+            # policy.json that says insecureAcceptAnything, which is equivalent.
+            "${skopeo[@]}" --insecure-policy copy \
               --dest-authfile "$HOME/.docker/config.json" \
               --dest-compress-format gzip \
               --dest-force-compress-format \
