@@ -210,20 +210,17 @@ jobs:
             [ -n "$t" ] && tags+=("$t")
           done <<< '${{ inputs.extra-tags }}'
 
-          # Push straight from the docker-archive `nix build` left at ./result,
-          # with skopeo rather than `docker load` + `docker push`.
+          # Push with skopeo rather than `docker load` + `docker push`.
           #
-          # WHY: dockerTools writes each layer as an UNCOMPRESSED tar diff, and
-          # the docker load/push path published them that way -- 114 of
-          # penguin v3.1.1's 115 layers landed in the registry as
+          # WHY NOT docker: dockerTools writes each layer as an UNCOMPRESSED tar
+          # diff, and the docker path published them that way -- 114 of penguin
+          # v3.1.1's 115 layers landed in the registry as
           # `application/vnd.docker.image.rootfs.diff.tar` (no `.gzip`), so the
-          # tag weighed 3.573 GB when the same image gzips to 1.79 GB. That made
-          # the first Nix-built release look ~4% BIGGER than the Dockerfile one
-          # it actually halves. skopeo compresses on the way out, so layers are
-          # stored `.tar.gzip` like every other image we publish.
-          #
-          # Skipping `docker load` also keeps a multi-GB image out of the
-          # per-node shared Docker daemon, which is already disk-pressured.
+          # tag weighed 3.573 GB where the same image gzips to ~1.75 GB. That
+          # made the first Nix-built release look ~4% BIGGER than the
+          # Dockerfile one it actually halves. Skipping `docker load` also keeps
+          # a multi-GB image out of the per-node shared Docker daemon, which is
+          # already disk-pressured.
           #
           # Auth: arc-registry-setup and docker/login-action have already
           # written ~/.docker/config.json, which skopeo reads. Harbor's
@@ -245,20 +242,52 @@ jobs:
           fi
           "${skopeo[@]}" --version
 
+          # Two phases: compress locally, then upload. NOT a straight
+          # archive->registry copy, because skopeo asks the destination "do you
+          # already have this blob?" using the *source* layer digest.
+          # dockerTools' archive presents UNCOMPRESSED digests, so any repo that
+          # has ever received an uncompressed push -- as penguin's had -- still
+          # holds blobs under exactly those digests. skopeo then reuses them and
+          # skips compressing, while still writing `.tar.gzip` into the
+          # manifest: an image that is both oversized AND mislabeled. That is
+          # what penguin v3.1.2 shipped (112 of 115 layers were plain tar
+          # declared as gzip, 3.501 GB). Compressing into a local `dir:` first
+          # makes the upload's source digests the *compressed* ones, which don't
+          # collide, so layers really are compressed and correctly labeled
+          # regardless of what the registry already holds.
+          #
+          # --insecure-policy: skopeo refuses to run without a containers trust
+          # policy and the runners ship no policy.json in any searched path
+          # (~/.config/containers, /etc/containers, /usr/share/containers). We
+          # verify no signatures here (neither did `docker push`), so skip the
+          # check rather than install a policy.json saying
+          # insecureAcceptAnything, which is equivalent.
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+
+          # The two phases MUST NOT share a blob-info cache. containers/image
+          # records compressed<->uncompressed digest pairs under
+          # $XDG_DATA_HOME/containers/cache. Phase 1 necessarily learns the pair
+          # for every layer, so if phase 2 reads the same cache it can look up
+          # the *uncompressed* digest, find the stale blob in the destination and
+          # reuse it -- reintroducing exactly the bug this structure exists to
+          # avoid. Verified against a registry pre-seeded with an uncompressed
+          # blob: sharing the cache reuses it (8697856 bytes, declared `tar`),
+          # separate caches upload real gzip (3838379 bytes). Fresh per-phase
+          # directories also make this independent of whatever the runner has in
+          # its home directory.
+          mkdir -p "$workdir/xdg1" "$workdir/xdg2"
+
+          echo "Compressing layers (gzip level 9)"
+          XDG_DATA_HOME="$workdir/xdg1" "${skopeo[@]}" --insecure-policy copy \
+            --dest-compress --dest-compress-format gzip --dest-compress-level 9 \
+            "docker-archive:result" "dir:$workdir/img"
+
           for t in "${tags[@]}"; do
             echo "Pushing $t"
-            # --insecure-policy: skopeo refuses to run without a containers
-            # trust policy, and the runners have no policy.json in any of the
-            # searched paths (~/.config/containers, /etc/containers,
-            # /usr/share/containers) -- it fails with "Error loading trust
-            # policy". We are not verifying image signatures here (neither did
-            # `docker push`), so skip the policy check rather than shipping a
-            # policy.json that says insecureAcceptAnything, which is equivalent.
-            "${skopeo[@]}" --insecure-policy copy \
+            XDG_DATA_HOME="$workdir/xdg2" "${skopeo[@]}" --insecure-policy copy \
               --dest-authfile "$HOME/.docker/config.json" \
-              --dest-compress-format gzip \
-              --dest-force-compress-format \
-              "docker-archive:result" \
+              "dir:$workdir/img" \
               "docker://$t"
           done
 
