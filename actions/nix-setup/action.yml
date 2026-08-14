@@ -95,6 +95,88 @@ runs:
           fi
         fi
 
+    # Diagnose, and where possible repair, a pre-existing /nix before the
+    # installer writes to it.
+    #
+    # On the self-hosted Arc runners /nix is not pod-local: each node mounts one
+    # shared, persistent nix store into every runner pod. A second scale set in
+    # the same cluster mounts that same store while running its runner as root,
+    # so the store's top-level directories intermittently end up root-owned
+    # while our runner is an ordinary uid. When a job lands in that state the
+    # single-user installer dies on its first store write:
+    #
+    #   error: creating directory '/nix/store/tmp-<pid>-0': Permission denied
+    #
+    # ...and nothing is built. The runner pod's init container already
+    # re-asserts ownership, but only at pod start, so it cannot cover the ~minute
+    # between init and this step -- which is exactly the window that broke
+    # rehosting/qemu's Release on 2026-08-12 while the identical workflow passed
+    # on neighbouring pods. Re-asserting here closes that window for every
+    # nix-setup consumer, and the dump below means the next occurrence is one
+    # glance rather than an archaeology session.
+    #
+    # Deliberately NON-RECURSIVE: only these top-level dirs plus the store db
+    # files. A recursive chown of a ~100k-path store costs minutes per job and
+    # was itself a previous CI stall; clients only ever create *new* entries in
+    # these directories, so the mount points are all that need fixing.
+    - name: Preflight /nix store
+      if: ${{ inputs.installer == 'cachix' && runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        if [ ! -d /nix/store ]; then
+          echo "No pre-existing /nix/store; the installer will create one."
+          exit 0
+        fi
+
+        echo "::group::/nix preflight"
+        echo "uid=$(id -u) gid=$(id -g) user=$(id -un)"
+        ls -ldn /nix /nix/store /nix/var/nix 2>&1 || true
+        findmnt -no SOURCE,TARGET,FSTYPE,OPTIONS --target /nix 2>&1 || true
+
+        # If a nix daemon owns this store, it is a multi-user install: the store
+        # is *meant* to be root-owned and chowning it would break the daemon.
+        # Report and leave it alone.
+        if [ -S /nix/var/nix/daemon-socket/socket ]; then
+          echo "nix daemon socket present; multi-user store, leaving ownership alone."
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        if ! mktemp -d /nix/store/tmp-preflight-XXXXXX >/dev/null 2>&1; then
+          echo "/nix/store is not writable by uid $(id -u); re-asserting ownership."
+          if sudo -n true 2>/dev/null; then
+            # if/fi rather than `[ -e ] &&`: GitHub runs composite bash steps
+            # with -e, so a trailing false test would abort the step.
+            for d in /nix /nix/store /nix/var /nix/var/nix \
+                     /nix/var/nix/db /nix/var/nix/gcroots \
+                     /nix/var/nix/temproots /nix/var/nix/profiles; do
+              if [ -e "$d" ]; then sudo chown "$(id -u):$(id -g)" "$d"; fi
+            done
+            # A gc or install run as root rewrites these and can leave them
+            # root-owned, which EPERMs every subsequent nix operation even once
+            # the directories themselves are fixed.
+            for f in /nix/var/nix/db/db.sqlite /nix/var/nix/db/db.sqlite-wal \
+                     /nix/var/nix/db/db.sqlite-shm; do
+              if [ -e "$f" ]; then sudo chown "$(id -u):$(id -g)" "$f"; fi
+            done
+            ls -ldn /nix /nix/store /nix/var/nix 2>&1 || true
+          else
+            echo "::warning::/nix/store unwritable and no passwordless sudo to repair it"
+          fi
+        fi
+        rm -rf /nix/store/tmp-preflight-* 2>/dev/null || true
+        echo "::endgroup::"
+
+        # Fail with a description of the actual problem rather than letting the
+        # installer surface it as a bare "Permission denied" 40 lines deep.
+        if ! mktemp -d /nix/store/tmp-preflight-XXXXXX >/dev/null 2>&1; then
+          echo "::error::/nix/store is not writable by uid $(id -u) and could not be repaired." \
+               "This runner's shared nix store has drifted to another owner" \
+               "(see the ownership dump above). The Nix install cannot proceed."
+          exit 1
+        fi
+        rm -rf /nix/store/tmp-preflight-* 2>/dev/null || true
+
     - name: Install Nix (cachix/install-nix-action)
       if: ${{ inputs.installer == 'cachix' }}
       uses: cachix/install-nix-action@v27
